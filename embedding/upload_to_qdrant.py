@@ -14,7 +14,7 @@ INPUT_FILE = os.path.join(SCRIPT_DIR, 'qpoll_upload_ready.json')
 EMBEDDING_MODEL_NAME = "nlpai-lab/KURE-v1"
 QDRANT_HOST = "52.63.128.220"
 QDRANT_PORT = 6333
-QPOLL_COLLECTION_NAME = "qpoll_vectors_v2" 
+QPOLL_COLLECTION_NAME = "qpoll_vectors_v3" 
 
 # [성능 설정]
 BATCH_SIZE = 128 # 👈 DB 업로드는 더 큰 배치가 효율적일 수 있습니다.
@@ -28,14 +28,15 @@ def setup_qdrant_collection(client, collection_name, vector_size):
         collection_names = [c.name for c in collections]
         
         if collection_name in collection_names:
-            print(f"Qdrant 컬렉션 '{collection_name}'이(가) 이미 존재합니다. 재생성합니다.")
-            client.recreate_collection(
-                collection_name=collection_name,
-                vectors_config=models.VectorParams(
-                    size=vector_size, 
-                    distance=models.Distance.COSINE # 👈 Kure v1 권장 방식
-                )
-            )
+            print(f"Qdrant 컬렉션 '{collection_name}'이(가) 이미 존재합니다. 이어서 업로드합니다.")
+            # print(f"Qdrant 컬렉션 '{collection_name}'이(가) 이미 존재합니다. 재생성합니다.")
+            # client.recreate_collection(
+            #     collection_name=collection_name,
+            #     vectors_config=models.VectorParams(
+            #         size=vector_size, 
+            #         distance=models.Distance.COSINE # 👈 Kure v1 권장 방식
+            #     )
+            # )
         else:
             print(f"Qdrant 컬렉션 '{collection_name}'을(를) 생성합니다.")
             client.recreate_collection(
@@ -45,6 +46,16 @@ def setup_qdrant_collection(client, collection_name, vector_size):
                     distance=models.Distance.COSINE
                 )
             )
+        print(f"Payload index 설정 중: 'panel_id' (Keyword)")
+
+        # 1. panel_id에 대한 인덱스 생성
+        client.create_payload_index(
+            collection_name = collection_name,
+            field_name = "panel_id",
+            field_schema = models.PayloadSchemaType.KEYWORD,
+            wait = True
+        )
+        
         print(f"컬렉션 '{collection_name}'이(가) 준비되었습니다.")
         
     except Exception as e:
@@ -82,14 +93,27 @@ def main():
     except Exception as e:
         print(f"Qdrant 연결 실패: {e}")
         return
+    
+    START_BATCH_NUM = 960
+    END_BATCH_NUM = 965
+
+    START_INDEX = (START_BATCH_NUM - 1) * BATCH_SIZE
+    END_INDEX = (END_BATCH_NUM) * BATCH_SIZE
 
     # 3. 데이터 배치(Batch) 처리 및 업로드
-    print(f"--- {BATCH_SIZE}개 단위로 Qdrant 업로드 시작 ---")
+    # print(f"--- {BATCH_SIZE}개 단위로 Qdrant 업로드 시작 ---")
+    print(f"--- {START_INDEX} 인덱스부터 이어서 업로드 시작 ---")
+
+    data_to_upload = embedded_data[START_INDEX : END_INDEX]
+
+    print(f"--- 총 {len(embedded_data)}개 중 {len(data_to_upload)}개 (배치 {START_BATCH_NUM}~{END_BATCH_NUM}) 업로드 시작 ---")
     
     # tqdm을 사용하여 진행률 표시
-    for i in tqdm(range(0, len(embedded_data), BATCH_SIZE), desc="Qdrant 업로드 중"):
+    # for i in tqdm(range(0, len(embedded_data), BATCH_SIZE), desc="Qdrant 업로드 중"):
+    for i in tqdm(range(0, len(data_to_upload), BATCH_SIZE), desc="Qdrant 업로드 중"):
         
-        batch = embedded_data[i : i + BATCH_SIZE]
+        #batch = embedded_data[i : i + BATCH_SIZE]
+        batch = data_to_upload[i : i + BATCH_SIZE]
         batch_points = [] # Qdrant에 업로드할 포인트 배치
 
         for item in batch:
@@ -97,9 +121,8 @@ def main():
             # 메타데이터 (Payload) 생성 (vector와 sentence 제외)
             payload = {
                 "panel_id": item.get("panel_id"),
-                # "topic_id": item.get("topic_id"), # topic 포함 안함.
                 "question": item.get("question"),
-                "sentence": item.get("sentence") # 👈 원본 문장도 저장
+                "sentence": item.get("sentence") # 원본 문장도 저장
             }
             
             point = models.PointStruct(
